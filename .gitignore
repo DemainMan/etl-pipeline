@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ETL Pipeline — generated artifacts
+raw_data/
+clean_data/
+pipeline.db
+*.db
+data/
