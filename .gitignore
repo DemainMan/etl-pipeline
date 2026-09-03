@@ -222,4 +222,10 @@ raw_data/
 clean_data/
 pipeline.db
 *.db
-data/
+
+# Ignore all downloaded/processed data EXCEPT the .gitkeep markers
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+
