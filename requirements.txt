@@ -1,6 +1,11 @@
-pandas>=2.2.2
-requests>=2.32.3
+# ETL Pipeline dependencies
+pandas>=2.2.2     # data manipulation for the Transform step
+requests>=2.32.3  # downloading data from a URL in the Extract step
+
+# Note: sqlite3 (used for the Load step) ships with Python —
+# it is part of the standard library, so no install needed.
+
 # Optional: uncomment when needed
-# pytest>=8.3.3
-# sqlalchemy>=2.0.0
-# psycopg2-binary>=2.9.9
+# pytest>=8.3.3        # data-quality tests
+# sqlalchemy>=2.0.0    # optional ORM if using PostgreSQL later
+# psycopg2-binary>=2.9.9  # PostgreSQL driver
