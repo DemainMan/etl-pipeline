@@ -1,0 +1,9 @@
+Province/State,Country/Region,Lat,Long,1/22/20,1/23/20,1/24/20,1/25/20
+,Afghanistan,33.93911,67.709953,0,0,0,0
+,Albania,41.1533,20.1683,0,0,2,10
+Springfield,Australia,-37.84,144.99,0,0,1,5
+Springfield,Australia,-37.84,144.99,0,0,3,5
+,Negative-Town,10.0,20.0,0,-5,-7,9
+, ,5.0,6.0,1,1,1,1
+  ,  Whitespace Land  ,1.0,2.0,0,1,2,3
+,NoCoords,,,0,1,2,3
