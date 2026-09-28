@@ -7,7 +7,7 @@ database for analysis.
 ## Status: complete
 
 All three steps are implemented, tested and documented. The suite
-(`121 tests`) runs offline in about two seconds, and CI runs it on every push.
+(`143 tests`) runs offline in about three seconds, and CI runs it on every push.
 
 ## Goal
 
@@ -192,7 +192,7 @@ run_id  started_at                       rows_loaded  total_rows  status
 python -m pytest
 ```
 
-121 tests covering each step, the CLI, and the pipeline end-to-end. They run
+143 tests covering each step, the CLI, and the pipeline end-to-end. They run
 **entirely offline** against `tests/fixtures/sample_confirmed.csv`, which
 reproduces every data-quality problem listed above in eight rows, so the suite
 is fast and deterministic. `test_plan.md` explains what is covered and why.

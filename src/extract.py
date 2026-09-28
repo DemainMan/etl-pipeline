@@ -144,8 +144,22 @@ def extract_from_url(
 
 
 def read_raw_csv(path: Path | str) -> pd.DataFrame:
-    """Read a raw CSV into a DataFrame (used by transform and the tests)."""
+    """Read a raw CSV into a DataFrame (used by transform and the tests).
+
+    A file that exists but cannot be parsed (empty, truncated, or not UTF-8
+    text) raises ExtractError, so callers never have to catch pandas' own
+    exceptions on top of ours.
+    """
     source = Path(path)
     if not source.is_file():
         raise ExtractError(f"Raw file not found: {source}")
-    return pd.read_csv(source)
+    try:
+        return pd.read_csv(source)
+    except pd.errors.EmptyDataError as exc:
+        raise ExtractError(f"Raw file is empty: {source}") from exc
+    except UnicodeDecodeError as exc:
+        raise ExtractError(f"Raw file is not valid UTF-8 text: {source}") from exc
+    except pd.errors.ParserError as exc:
+        raise ExtractError(f"Could not parse raw CSV {source}: {exc}") from exc
+    except OSError as exc:
+        raise ExtractError(f"Could not read raw file {source}: {exc}") from exc

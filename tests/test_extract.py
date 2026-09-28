@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from pathlib import Path
+import os
 
 import pytest
 import requests
@@ -105,6 +105,24 @@ class TestExtractFromUrl:
 
         assert [p.name for p in tmp_path.iterdir()] == ["raw.csv"]
 
+    def test_the_temp_file_is_cleaned_up_when_the_rename_fails(
+        self, raw_url, tmp_path, monkeypatch
+    ):
+        # If os.replace() fails, the partially written .part file must not be
+        # left on disk for the next run to trip over.
+        import src.extract as extract_module
+
+        def boom(src, dst):
+            raise OSError("rename failed")
+
+        monkeypatch.setattr(extract_module.os, "replace", boom)
+        destination = tmp_path / "raw.csv"
+
+        with pytest.raises(OSError, match="rename failed"):
+            extract_from_url(raw_url, destination)
+
+        assert [p.name for p in tmp_path.iterdir()] == []
+
 
 class TestReadRawCsv:
     def test_reads_the_sample(self, sample_raw):
@@ -115,3 +133,41 @@ class TestReadRawCsv:
     def test_missing_file_raises(self, tmp_path):
         with pytest.raises(ExtractError, match="not found"):
             read_raw_csv(tmp_path / "absent.csv")
+
+    def test_zero_byte_file_raises_an_extract_error(self, tmp_path):
+        truncated = tmp_path / "truncated.csv"
+        truncated.write_bytes(b"")
+
+        with pytest.raises(ExtractError, match="is empty"):
+            read_raw_csv(truncated)
+
+    def test_non_utf8_file_raises_an_extract_error(self, tmp_path):
+        binary = tmp_path / "binary.csv"
+        binary.write_bytes(b"\xff\xfe\x00not a csv at all")
+
+        with pytest.raises(ExtractError, match="not valid UTF-8"):
+            read_raw_csv(binary)
+
+    def test_malformed_csv_raises_an_extract_error(self, tmp_path):
+        # An unterminated quoted field makes pandas raise ParserError; it must
+        # not escape as a raw pandas exception.
+        malformed = tmp_path / "malformed.csv"
+        malformed.write_text('a,b\n"1,2\n', encoding="utf-8")
+
+        with pytest.raises(ExtractError, match="Could not parse"):
+            read_raw_csv(malformed)
+
+    def test_unreadable_file_raises_an_extract_error(self, tmp_path):
+        # Permissions are stripped because the tests also run as root in some
+        # environments, where a 0o000 file is still readable.
+        if os.geteuid() == 0:
+            pytest.skip("root bypasses file permissions")
+
+        secret = tmp_path / "secret.csv"
+        secret.write_text("a,b\n1,2\n", encoding="utf-8")
+        secret.chmod(0o000)
+        try:
+            with pytest.raises(ExtractError, match="Could not read"):
+                read_raw_csv(secret)
+        finally:
+            secret.chmod(0o600)

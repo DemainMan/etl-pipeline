@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import sys
 from contextlib import closing
 from pathlib import Path
 
@@ -58,6 +59,13 @@ class TestFullRun:
         assert run.transform_result.rows_out == EXPECTED_CLEAN_ROWS
         assert run.load_result.rows_loaded == EXPECTED_CLEAN_ROWS
         assert run.duration_seconds >= 0
+
+    def test_the_result_summarises_every_step(self, run):
+        text = str(run)
+        assert "extract ->" in text
+        assert "transform ->" in text
+        assert "load ->" in text
+        assert f"{EXPECTED_CLEAN_ROWS} rows" in text
 
     def test_data_survives_the_round_trip(self, run, paths):
         frame = pd.read_csv(paths["processed"])
@@ -283,6 +291,47 @@ class TestCli:
         assert main(["--db", str(tmp_path / "absent.db"), "--summary"]) == 0
         assert "No database at" in capsys.readouterr().out
 
+    def test_summary_with_an_invalid_table_name_exits_1(self, tmp_path, caplog):
+        # --summary used to run outside the try/except, so an invalid --table
+        # escaped as an unhandled LoadError traceback instead of exit code 1.
+        with caplog.at_level("ERROR"):
+            code = main(["--db", str(tmp_path / "absent.db"), "--summary",
+                         "--table", "bad;name"])
+
+        assert code == 1
+        assert "Invalid table name" in caplog.text
+
+    def test_corrupt_raw_file_exits_1_without_a_traceback(self, tmp_path, caplog):
+        # --skip-extract bypasses the download, so the transform step is the
+        # one that re-reads the file. A zero-byte raw file must be reported as
+        # a TransformError, not dumped as a raw pandas error traceback.
+        empty_raw = tmp_path / "raw.csv"
+        empty_raw.write_bytes(b"")
+        with caplog.at_level("ERROR"):
+            code = main([
+                "--skip-extract",
+                "--raw-path", str(empty_raw),
+                "--processed-path", str(tmp_path / "clean.csv"),
+                "--db", str(tmp_path / "pipeline.db"),
+            ])
+
+        assert code == 1
+        assert "is empty" in caplog.text
+
+    def test_main_returns_130_on_an_interrupt(self, tmp_path, monkeypatch, caplog):
+        # Ctrl-C must exit 130, not 1, so shells and CI can tell the two apart.
+        import src.run_pipeline as run_module
+
+        def interrupt(*args, **kwargs):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(run_module, "run_pipeline", interrupt)
+        with caplog.at_level("ERROR"):
+            code = main(["--db", str(tmp_path / "pipeline.db")])
+
+        assert code == 130
+        assert "Interrupted." in caplog.text
+
 
 class TestArgumentParser:
     def test_defaults_point_at_the_project_layout(self):
@@ -309,3 +358,31 @@ class TestArgumentParser:
 
         assert excinfo.value.code == 0
         assert "etl-pipeline" in capsys.readouterr().out
+
+    def test_running_the_module_as_a_script_sets_the_exit_code(
+        self, paths, raw_url, monkeypatch
+    ):
+        # Covers the `if __name__ == "__main__"` branch: a successful run must
+        # exit 0 and a failing one must exit 1.
+        import runpy
+
+        # Drop the already-imported module first, otherwise runpy warns that
+        # src.run_pipeline was in sys.modules before it re-executes it.
+        monkeypatch.delitem(sys.modules, "src.run_pipeline", raising=False)
+
+        monkeypatch.setattr(
+            sys, "argv", ["run_pipeline", "--source", raw_url,
+                          "--raw-path", str(paths["raw"]),
+                          "--processed-path", str(paths["processed"]),
+                          "--db", str(paths["db"])]
+        )
+        with pytest.raises(SystemExit) as excinfo:
+            runpy.run_module("src.run_pipeline", run_name="__main__")
+        assert excinfo.value.code == 0
+
+        monkeypatch.delitem(sys.modules, "src.run_pipeline", raising=False)
+        monkeypatch.setattr(sys, "argv", ["run_pipeline", "--source", "ftp://nope",
+                                          "--db", str(paths["db"])])
+        with pytest.raises(SystemExit) as excinfo:
+            runpy.run_module("src.run_pipeline", run_name="__main__")
+        assert excinfo.value.code == 1

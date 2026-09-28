@@ -18,7 +18,7 @@
 - `src/load.py` — SQLite schema with a `(date, country, province)` primary key,
   `INSERT OR REPLACE` upserts for idempotency, and a `pipeline_runs` audit table.
 - `src/run_pipeline.py` — argparse CLI with 10 options and a summary report.
-- `tests/` — 121 tests, fully offline, running in ~2s. `test_plan.md` explains
+- `tests/` — 143 tests, fully offline, running in ~3s. `test_plan.md` explains
   the coverage and the known gaps.
 - `sql_notes/analysis_queries.sql` — 9 analysis queries and 4 data-quality
   checks, all verified to run against the loaded database.

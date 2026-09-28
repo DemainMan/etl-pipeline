@@ -52,9 +52,12 @@ Net result: **22 clean rows** from 32 melted rows, asserted in
   timeout value), empty body, blank body, unsupported URL scheme, missing
   local file.
 - **Safety:** a failed download leaves the previous file untouched, and no
-  `.part` temp file is left behind.
+  `.part` temp file is left behind — including when `os.replace()` itself
+  fails.
 - **Metadata:** a timeout is always passed to `requests.get`; a custom
   `User-Agent` is sent.
+- **Unreadable input:** an empty, non-UTF-8 or malformed file raises
+  `ExtractError` rather than leaking a pandas exception.
 
 ### `src/transform.py` — `tests/test_transform.py`
 
@@ -79,7 +82,9 @@ Net result: **22 clean rows** from 32 melted rows, asserted in
   `bad name; DROP TABLE x` is rejected before the database file is created.
 - **Scale:** a 5,500-row file exercises the multi-chunk insert path.
 - **Error paths:** missing CSV, CSV with the wrong columns, header-only CSV.
-- **Audit trail:** `pipeline_runs` gains one `success` row per run.
+- **Audit trail:** `pipeline_runs` gains one `success` row per run; a failure
+  mid-insert is recorded as `status='failed'`, and if the audit table itself is
+  unusable the original error still surfaces.
 
 ### `src/run_pipeline.py` — `tests/test_pipeline.py`
 
@@ -89,13 +94,35 @@ Net result: **22 clean rows** from 32 melted rows, asserted in
   while the audit table records both.
 - Options: `--skip-extract` (pointed at a missing source to prove nothing is
   downloaded), date range, custom table name.
-- CLI: `main()` returns 0 on success, 1 on failure; `--summary` works; parser
-  defaults point at the real project layout.
+- CLI: `main()` returns 0 on success, 1 on failure, 130 on `Ctrl-C`;
+  `--summary` works, including its error paths; parser defaults point at the
+  real project layout; running the module as a script sets the exit code.
 
 ## Known gaps
 
-- `load_to_sqlite` failure *recording* (the `status='failed'` branch) is not
-  covered by a test, because provoking a real `sqlite3.Error` mid-insert
-  needs a deliberately corrupted database file.
 - Dates before 2020-01-22 are not tested; the source dataset does not contain
   any.
+
+## Coverage
+
+The suite covers 100% of the statements in `src/`:
+
+```bash
+python -m pytest --cov=src --cov-report=term-missing
+```
+
+| Module | Statements | Coverage |
+|--------|-----------:|---------:|
+| `config.py` | 24 | 100% |
+| `extract.py` | 76 | 100% |
+| `load.py` | 124 | 100% |
+| `run_pipeline.py` | 86 | 100% |
+| `transform.py` | 148 | 100% |
+| **Total** | **458** | **100%** |
+
+The defensive branches added after an audit are covered by tests that
+deliberately provoke them: an empty, non-UTF-8 or malformed CSV; a read-only
+database directory; a `sqlite3.Error` raised mid-insert; and a corrupt database
+file that also defeats the failure-recording `UPDATE`. The permission-based
+tests skip themselves when the suite runs as root, since root bypasses file
+permissions.

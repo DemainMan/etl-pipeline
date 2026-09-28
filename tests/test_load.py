@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -207,6 +208,69 @@ class TestLoadToSqlite:
 
         assert len(fetch_all(db, "SELECT run_id FROM pipeline_runs")) == 2
 
+    def test_a_failed_run_is_recorded_as_failed(self, clean_csv, tmp_path, monkeypatch):
+        # The 'running' row is committed separately so a mid-run failure can
+        # still be marked 'failed' rather than disappearing on rollback.
+        import src.load as load_module
+
+        def explode(*args, **kwargs):
+            raise sqlite3.OperationalError("disk I/O error")
+
+        monkeypatch.setattr(load_module, "_insert_rows", explode)
+        db = tmp_path / "pipeline.db"
+
+        with pytest.raises(LoadError, match="Failed to load"):
+            load_to_sqlite(clean_csv, db)
+
+        runs = fetch_all(db, "SELECT status, message FROM pipeline_runs")
+        assert runs == [("failed", "disk I/O error")]
+
+    def test_the_original_error_survives_a_corrupt_database(self, clean_csv, tmp_path, caplog):
+        # On a badly corrupted file even the failure-recording UPDATE fails.
+        # That secondary error must not mask the real cause.
+        db = tmp_path / "pipeline.db"
+        load_to_sqlite(clean_csv, db)
+        with open(db, "r+b") as handle:
+            handle.seek(4096)
+            handle.write(b"\xff" * 8192)
+
+        with caplog.at_level("WARNING"), pytest.raises(LoadError) as excinfo:
+            load_to_sqlite(clean_csv, db)
+
+        assert isinstance(excinfo.value.__cause__, sqlite3.Error)
+        assert "malformed" in str(excinfo.value)
+
+    def test_a_corrupt_database_does_not_hang_or_crash(self, clean_csv, tmp_path):
+        # Guards against the failure handler itself raising out of load_to_sqlite.
+        db = tmp_path / "pipeline.db"
+        load_to_sqlite(clean_csv, db)
+        with open(db, "r+b") as handle:
+            handle.seek(4096)
+            handle.write(b"\xff" * 8192)
+
+        with pytest.raises(LoadError):
+            load_to_sqlite(clean_csv, db)
+
+    def test_an_unrecordable_failure_still_raises_load_error(
+        self, clean_csv, tmp_path, monkeypatch, caplog
+    ):
+        # If the audit table itself is unusable, recording the failure fails
+        # too. That must not mask the original error.
+        import src.load as load_module
+
+        db = tmp_path / "pipeline.db"
+        with closing(sqlite3.connect(db)) as connection:
+            create_schema(connection, "daily_cases")
+            connection.execute("DROP TABLE pipeline_runs")
+            connection.commit()
+
+        monkeypatch.setattr(load_module, "create_schema", lambda *a, **k: None)
+        with caplog.at_level("WARNING"), pytest.raises(LoadError) as excinfo:
+            load_to_sqlite(clean_csv, db)
+
+        assert "no such table" in str(excinfo.value)
+        assert "Could not record the failed run" in caplog.text
+
     def test_missing_csv_raises(self, tmp_path):
         with pytest.raises(LoadError, match="Run the transform step first"):
             load_to_sqlite(tmp_path / "absent.csv", tmp_path / "pipeline.db")
@@ -227,6 +291,75 @@ class TestLoadToSqlite:
 
         with pytest.raises(LoadError, match="no data rows"):
             load_to_sqlite(csv, tmp_path / "pipeline.db")
+
+    def test_zero_byte_csv_raises_a_load_error(self, tmp_path):
+        # A truncated write (disk full, interrupted run) must not escape as a
+        # raw pandas error, or the CLI would print a traceback instead of a
+        # clean failure message.
+        csv = tmp_path / "truncated.csv"
+        csv.write_bytes(b"")
+
+        with pytest.raises(LoadError, match="is empty"):
+            load_to_sqlite(csv, tmp_path / "pipeline.db")
+
+    def test_non_utf8_csv_raises_a_load_error(self, tmp_path):
+        csv = tmp_path / "binary.csv"
+        csv.write_bytes(b"\xff\xfe\x00not a csv at all")
+
+        with pytest.raises(LoadError, match="not valid UTF-8"):
+            load_to_sqlite(csv, tmp_path / "pipeline.db")
+
+    def test_malformed_csv_raises_a_load_error(self, tmp_path):
+        csv = tmp_path / "malformed.csv"
+        csv.write_text('a,b\n"1,2\n', encoding="utf-8")
+
+        with pytest.raises(LoadError, match="Could not parse"):
+            load_to_sqlite(csv, tmp_path / "pipeline.db")
+
+    def test_unwritable_database_path_raises_a_load_error(self, clean_csv, tmp_path):
+        # The connect() call happens before the audit-trail try/except, so it
+        # has to be guarded separately or a raw sqlite3.OperationalError
+        # reaches the user.
+        if os.geteuid() == 0:
+            pytest.skip("root bypasses directory permissions")
+
+        readonly = tmp_path / "readonly"
+        readonly.mkdir()
+        readonly.chmod(0o500)
+        try:
+            with pytest.raises(LoadError, match="Could not open the database"):
+                load_to_sqlite(clean_csv, readonly / "pipeline.db")
+        finally:
+            readonly.chmod(0o700)
+
+    def test_unreadable_csv_raises_a_load_error(self, tmp_path):
+        if os.geteuid() == 0:
+            pytest.skip("root bypasses file permissions")
+
+        csv = tmp_path / "secret.csv"
+        csv.write_text(
+            "date,country,province,latitude,longitude,confirmed,new_cases\n",
+            encoding="utf-8",
+        )
+        csv.chmod(0o000)
+        try:
+            with pytest.raises(LoadError, match="Could not read"):
+                load_to_sqlite(csv, tmp_path / "pipeline.db")
+        finally:
+            csv.chmod(0o600)
+
+    def test_uncreatable_database_directory_raises_a_load_error(self, clean_csv, tmp_path):
+        if os.geteuid() == 0:
+            pytest.skip("root bypasses directory permissions")
+
+        readonly = tmp_path / "readonly"
+        readonly.mkdir()
+        readonly.chmod(0o500)
+        try:
+            with pytest.raises(LoadError, match="Could not create the directory"):
+                load_to_sqlite(clean_csv, readonly / "nested" / "pipeline.db")
+        finally:
+            readonly.chmod(0o700)
 
     def test_invalid_table_name_raises_before_touching_the_database(
         self, clean_csv, tmp_path

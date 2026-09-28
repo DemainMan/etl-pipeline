@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -65,6 +64,22 @@ class TestReadRaw:
     def test_missing_file_raises(self, tmp_path):
         with pytest.raises(TransformError):
             read_raw(tmp_path / "absent.csv")
+
+    def test_zero_byte_file_raises_a_transform_error(self, tmp_path):
+        # A truncated download must surface as TransformError, not as a raw
+        # pandas EmptyDataError escaping to the CLI.
+        truncated = tmp_path / "truncated.csv"
+        truncated.write_bytes(b"")
+
+        with pytest.raises(TransformError, match="is empty"):
+            read_raw(truncated)
+
+    def test_non_utf8_file_raises_a_transform_error(self, tmp_path):
+        binary = tmp_path / "binary.csv"
+        binary.write_bytes(b"\xff\xfe\x00not a csv at all")
+
+        with pytest.raises(TransformError, match="not valid UTF-8"):
+            read_raw(binary)
 
 
 class TestRenameColumns:

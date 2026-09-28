@@ -104,7 +104,20 @@ def _read_clean_csv(csv_path: Path | str) -> pd.DataFrame:
             f"Cleaned file not found: {path}. Run the transform step first."
         )
 
-    frame = pd.read_csv(path)
+    # A truncated or corrupted file must surface as a LoadError, not as a raw
+    # pandas/Unicode exception: the CLI only catches LoadError, so anything
+    # else would reach the user as an unhandled traceback.
+    try:
+        frame = pd.read_csv(path)
+    except pd.errors.EmptyDataError as exc:
+        raise LoadError(f"Cleaned file is empty: {path}") from exc
+    except UnicodeDecodeError as exc:
+        raise LoadError(f"Cleaned file is not valid UTF-8 text: {path}") from exc
+    except pd.errors.ParserError as exc:
+        raise LoadError(f"Could not parse cleaned file {path}: {exc}") from exc
+    except OSError as exc:
+        raise LoadError(f"Could not read cleaned file {path}: {exc}") from exc
+
     missing = [c for c in config.OUTPUT_COLUMNS if c not in frame.columns]
     if missing:
         raise LoadError(
@@ -188,12 +201,25 @@ def load_to_sqlite(
     frame = _read_clean_csv(csv_path)
 
     database = Path(db_path)
-    database.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        database.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise LoadError(
+            f"Could not create the directory for {database}: {exc}"
+        ) from exc
 
     started_at = datetime.now(timezone.utc)
     LOGGER.info("Loading %d rows into %s", len(frame), database)
 
-    with closing(sqlite3.connect(database)) as connection:
+    # Connecting is outside the audit-trail try/except below, so an unusable
+    # path (read-only directory, missing permissions) is reported as a
+    # LoadError here rather than escaping as a raw sqlite3.OperationalError.
+    try:
+        connection = sqlite3.connect(database)
+    except sqlite3.Error as exc:
+        raise LoadError(f"Could not open the database at {database}: {exc}") from exc
+
+    with closing(connection):
         run_id = 0
         try:
             create_schema(connection, table)
@@ -204,6 +230,10 @@ def load_to_sqlite(
                 (started_at.isoformat(), table),
             )
             run_id = int(cursor.lastrowid or 0)
+            # Commit the 'running' row on its own so that a later failure can
+            # still be recorded: rolling back the insert would take this row
+            # with it and leave no trace of the failed run.
+            connection.commit()
 
             rows_loaded = _insert_rows(connection, table, frame)
             total_rows = count_rows(connection, table)
@@ -224,13 +254,18 @@ def load_to_sqlite(
         except sqlite3.Error as exc:
             connection.rollback()
             # Record the failure before giving up, so the audit trail is honest.
-            connection.execute(
-                f"UPDATE {config.RUNS_TABLE_NAME} "
-                "SET finished_at = ?, status = 'failed', message = ? "
-                "WHERE run_id = ?",
-                (datetime.now(timezone.utc).isoformat(), str(exc), run_id),
-            )
-            connection.commit()
+            # This UPDATE is best-effort: on a badly corrupted database it can
+            # fail too, and that secondary error must not mask the original.
+            try:
+                connection.execute(
+                    f"UPDATE {config.RUNS_TABLE_NAME} "
+                    "SET finished_at = ?, status = 'failed', message = ? "
+                    "WHERE run_id = ?",
+                    (datetime.now(timezone.utc).isoformat(), str(exc), run_id),
+                )
+                connection.commit()
+            except sqlite3.Error:
+                LOGGER.warning("Could not record the failed run in the audit table.")
             raise LoadError(f"Failed to load {csv_path} into {database}: {exc}") from exc
 
     LOGGER.info("Load complete: %d rows written, %d total in %s", rows_loaded, total_rows, table)

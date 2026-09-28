@@ -198,11 +198,11 @@ def main(argv: list[str] | None = None) -> int:
         stream=sys.stdout,
     )
 
-    if args.summary:
-        print(summarise(args.db, args.table))
-        return 0
-
     try:
+        if args.summary:
+            print(summarise(args.db, args.table))
+            return 0
+
         result = run_pipeline(
             source_url=args.source,
             raw_path=args.raw_path,
@@ -223,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print()
     print("=" * 62)
-    print("Pipeline finished in %.2fs" % result.duration_seconds)
+    print(f"Pipeline finished in {result.duration_seconds:.2f}s")
     print("=" * 62)
     print(f"  raw       {result.extract_result}")
     print(f"  cleaned   {result.transform_result}")
