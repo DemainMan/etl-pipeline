@@ -1,4 +1,6 @@
 # etl-pipeline
+verification code: WTC-FHL8VAFY
+
 
 A small, well-structured ETL pipeline that extracts data from a public CSV
 source, cleans and transforms it with pandas, and loads it into a SQLite
