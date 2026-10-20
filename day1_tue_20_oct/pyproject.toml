@@ -1,0 +1,25 @@
+# Tool configuration only — this project is run as `python -m src.run_pipeline`
+# and is not packaged for installation.
+
+[tool.ruff]
+target-version = "py310"   # CI tests 3.10 upwards, so no 3.11-only syntax
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "C4", "RUF"]
+
+[tool.ruff.lint.isort]
+# `src` and `tests` are packages run from the repo root.
+known-first-party = ["src", "tests"]
+
+[tool.ruff.lint.per-file-ignores]
+# Long SQL strings and log lines in tests read better unwrapped.
+"tests/*" = ["E501"]
+
+[tool.coverage.run]
+source = ["src"]
+branch = false
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 100

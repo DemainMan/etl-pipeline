@@ -8,18 +8,26 @@ fast, offline and deterministic.
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import pytest
 
+from src import config
+
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 SAMPLE_RAW = FIXTURE_DIR / "sample_confirmed.csv"
+SAMPLE_DEATHS = FIXTURE_DIR / "sample_deaths.csv"
 
 # The fixture has 8 locations x 4 dates = 32 melted rows, of which
 # 4 have a blank country, 2 hold a negative count, and 4 are duplicates.
 EXPECTED_MELTED_ROWS = 32
 EXPECTED_CLEAN_ROWS = 22
 EXPECTED_COUNTRIES = 6
+
+# The deaths fixture has the same 8 locations, so the two can be joined.
+# 4 rows have a blank country, 1 holds a negative count, 4 are duplicates.
+EXPECTED_DEATHS_CLEAN_ROWS = 23
 
 
 @pytest.fixture
@@ -32,6 +40,18 @@ def sample_raw() -> Path:
 def raw_url(sample_raw: Path) -> str:
     """A file:// URL for the sample, so extract runs offline."""
     return sample_raw.as_uri()
+
+
+@pytest.fixture
+def sample_deaths() -> Path:
+    """Path to the messy sample deaths CSV."""
+    return SAMPLE_DEATHS
+
+
+@pytest.fixture
+def deaths_url(sample_deaths: Path) -> str:
+    """A file:// URL for the deaths sample."""
+    return sample_deaths.as_uri()
 
 
 @pytest.fixture
@@ -90,3 +110,20 @@ def fake_get(monkeypatch):
         return calls
 
     return _install
+
+
+@pytest.fixture
+def offline_datasets(tmp_path, monkeypatch) -> dict[str, config.Dataset]:
+    """Point both registered datasets at the fixtures and tmp_path."""
+    sources = {"confirmed": SAMPLE_RAW, "deaths": SAMPLE_DEATHS}
+    specs = {}
+    for name, source in sources.items():
+        spec = dataclasses.replace(
+            config.DATASETS[name],
+            source_url=source.as_uri(),
+            raw_path=tmp_path / "raw" / f"{name}.csv",
+            processed_path=tmp_path / "processed" / f"{name}.csv",
+        )
+        monkeypatch.setitem(config.DATASETS, name, spec)
+        specs[name] = spec
+    return specs

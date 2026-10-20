@@ -35,8 +35,8 @@ from . import config
 __all__ = [
     "ExtractError",
     "ExtractResult",
-    "fetch_url",
     "extract_from_url",
+    "fetch_url",
     "read_raw_csv",
 ]
 

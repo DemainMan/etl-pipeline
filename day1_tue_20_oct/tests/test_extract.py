@@ -66,6 +66,14 @@ class TestExtractFromUrl:
         assert result.sha256 == hashlib.sha256(sample_raw.read_bytes()).hexdigest()
         assert result.downloaded_at.tzinfo is not None
 
+    def test_result_prints_size_and_a_short_checksum(self, raw_url, tmp_path):
+        result = extract_from_url(raw_url, tmp_path / "raw.csv")
+        text = str(result)
+
+        assert text.startswith(str(tmp_path / "raw.csv"))
+        assert f"{result.size_bytes:,} bytes" in text
+        assert f"sha256={result.sha256[:12]}..." in text
+
     def test_creates_missing_parent_directories(self, raw_url, tmp_path):
         destination = tmp_path / "a" / "b" / "c" / "raw.csv"
         extract_from_url(raw_url, destination)

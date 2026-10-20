@@ -1,0 +1,5 @@
+# Development tools: tests, coverage and linting.
+# Install with:  pip install -r requirements-dev.txt
+-r requirements.txt
+pytest-cov>=5.0.0   # coverage report, enforced at 100% in CI
+ruff>=0.6.0         # linting: ruff check src tests
