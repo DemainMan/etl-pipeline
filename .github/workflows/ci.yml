@@ -46,3 +46,11 @@ jobs:
               url = (Path('tests/fixtures') / f'sample_{name}.csv').resolve().as_uri()
               print(extract_from_url(url, f'/tmp/ci-{name}-raw.csv'))
           "
+
+      - name: Smoke test the transform step offline
+        run: |
+          python -c "
+          from src.transform import transform
+          for name in ('confirmed', 'deaths'):
+              print(transform(f'/tmp/ci-{name}-raw.csv', f'/tmp/ci-{name}-clean.csv', dataset=name))
+          "
