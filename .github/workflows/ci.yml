@@ -37,20 +37,30 @@ jobs:
       - name: Run tests with enforced coverage
         run: python -m pytest -v --cov=src --cov-report=term-missing --cov-fail-under=100
 
-      - name: Smoke test the extract step offline
+      - name: Smoke test the pipeline offline (confirmed)
+        # Proves the three steps work together without touching the network,
+        # by pointing the pipeline at the small test fixture.
         run: |
-          python -c "
-          from pathlib import Path
-          from src.extract import extract_from_url
-          for name in ('confirmed', 'deaths'):
-              url = (Path('tests/fixtures') / f'sample_{name}.csv').resolve().as_uri()
-              print(extract_from_url(url, f'/tmp/ci-{name}-raw.csv'))
-          "
+          python -m src.run_pipeline \
+            --source "file://$PWD/tests/fixtures/sample_confirmed.csv" \
+            --raw-path /tmp/ci-raw.csv \
+            --processed-path /tmp/ci-clean.csv \
+            --db /tmp/ci-pipeline.db
 
-      - name: Smoke test the transform step offline
+      - name: Smoke test the pipeline offline (deaths)
         run: |
-          python -c "
-          from src.transform import transform
-          for name in ('confirmed', 'deaths'):
-              print(transform(f'/tmp/ci-{name}-raw.csv', f'/tmp/ci-{name}-clean.csv', dataset=name))
-          "
+          python -m src.run_pipeline --dataset deaths \
+            --source "file://$PWD/tests/fixtures/sample_deaths.csv" \
+            --raw-path /tmp/ci-deaths-raw.csv \
+            --processed-path /tmp/ci-deaths-clean.csv \
+            --db /tmp/ci-pipeline.db
+
+      - name: Run the pipeline twice to prove it is idempotent
+        run: |
+          for i in 1 2; do
+            python -m src.run_pipeline --skip-extract --quiet \
+              --raw-path /tmp/ci-raw.csv \
+              --processed-path /tmp/ci-clean.csv \
+              --db /tmp/ci-pipeline.db
+          done
+          python -m src.run_pipeline --db /tmp/ci-pipeline.db --dataset all --summary

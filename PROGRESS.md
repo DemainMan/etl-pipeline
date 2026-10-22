@@ -15,8 +15,14 @@ under the tag `backup-before-reset-2026-10-20`.
   `validate()` that stops bad data, optional date window. Works for both
   datasets. Live check: 289 raw rows → 330,327 tidy rows per dataset.
   **84 tests**, 100% coverage.
+- **Thu 22 Oct 2026 (Day 3)**: `src/load.py` — SQLite schema with a
+  `(date, country, province)` primary key, chunked `INSERT OR REPLACE`
+  (idempotent), `pipeline_runs` audit table that records failures honestly.
+  `src/run_pipeline.py` — CLI with `--dataset confirmed|deaths|all`, date
+  window, `--skip-extract`, `--summary`; exit codes 0 / 1 / 130. Live run:
+  330,327 rows in each table, 201 countries, 2020-01-22 to 2023-03-09; a
+  second run leaves the counts unchanged. **172 tests**, 100% coverage.
 
 ## Next
 
-- Thu 22 Oct: load step and CLI
 - Fri 23 Oct: report, SQL notes, docs, demo, release v1.0.0
