@@ -22,7 +22,24 @@ under the tag `backup-before-reset-2026-10-20`.
   window, `--skip-extract`, `--summary`; exit codes 0 / 1 / 130. Live run:
   330,327 rows in each table, 201 countries, 2020-01-22 to 2023-03-09; a
   second run leaves the counts unchanged. **172 tests**, 100% coverage.
+- **Fri 23 Oct 2026 (Day 4)**: **Project complete — v1.0.0.**
+  `src/report.py` — `daily_summary` view (cases + deaths + case fatality
+  rate) and a Markdown report (`--report`). 16 SQL statements in
+  `sql_notes/analysis_queries.sql`, all verified against the live database.
+  `demo.sh` + `DEMO.md`, `test_plan.md`, `CHANGELOG.md`, final README.
+  **200 tests**, 100% coverage.
 
-## Next
+## Verified end-to-end (live data, 23 Oct 2026)
 
-- Fri 23 Oct: report, SQL notes, docs, demo, release v1.0.0
+- `python -m src.run_pipeline --dataset all`: 330,327 rows in `daily_cases`
+  and in `daily_deaths`, 201 countries, 2020-01-22 to 2023-03-09, about 10 s.
+- Re-running leaves both tables at 330,327 rows (no duplication).
+- Every case row has a matching deaths row (`daily_summary` has 330,327 rows).
+- Latest worldwide totals: 676,570,149 confirmed, 6,881,802 deaths, 1.02%.
+- The duplicate-key, negative-count and null-key checks all return zero rows.
+
+## Possible next steps
+
+- PostgreSQL as an alternative target (`INSERT ... ON CONFLICT DO UPDATE`).
+- Schedule the run (cron or a timed GitHub Actions workflow).
+- Chart the `daily_summary` view in the report.

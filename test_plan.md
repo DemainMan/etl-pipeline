@@ -1,0 +1,168 @@
+# Test Plan
+
+How the pipeline is tested, and why. Run the suite with:
+
+```bash
+python -m pytest
+python -m pytest --cov=src          # coverage, enforced at 100% in CI
+```
+
+## Principles
+
+1. **No network in tests.** Every test runs against
+   `tests/fixtures/sample_confirmed.csv` and `sample_deaths.csv` via `file://` URLs, so the suite is
+   offline, fast (~2s) and deterministic. The HTTP path is covered by
+   injecting a fake `requests.get`.
+2. **No shared state.** Each test gets its own `tmp_path`; the real
+   `data/` folder and `pipeline.db` are never touched.
+3. **Test the data, not the implementation.** Assertions describe the output
+   contract (columns, types, row counts, invariants) rather than which
+   internal function produced them.
+4. **Every data-quality rule has a test.** If `validate()` can reject
+   something, a test proves it does.
+
+## The fixture deliberately contains messy data
+
+`tests/fixtures/sample_confirmed.csv` is 8 locations x 4 dates = 32 melted
+rows. It contains the two problems the live dataset really has (blank
+provinces, missing coordinates) plus three it does not currently have
+(negative counts, blank countries, duplicate keys) — because the rules that
+handle those three are the ones most likely to rot unnoticed if they are never
+exercised.
+
+| Problem in the raw file | Rows in the fixture | How the pipeline handles it | Covered by |
+|---|---|---|---|
+| Blank `Province/State` | 6 | Filled with `Unknown` | `TestNormaliseText`, `TestTransform::test_blank_province_becomes_unknown` |
+| Whitespace around names | 1 | Stripped | `TestNormaliseText::test_whitespace_is_stripped_from_names` |
+| Blank `Country/Region` | 4 (all dates) | Row dropped | `TestTransform::test_reports_what_was_dropped` |
+| Negative case counts | 2 | Row dropped | `TestTransform::test_negative_rows_are_dropped`, `TestValidate::test_rejects_negative_counts` |
+| Duplicate (date, country, province) | 4 | De-duplicated, last wins | `TestDropDuplicates`, `TestTransform::test_duplicate_row_kept_the_later_value` |
+| Missing `Lat`/`Long` | 4 (all dates) | Kept, stored as `NULL` | `TestLoadToSqlite::test_missing_coordinates_are_stored_as_null` |
+
+Net result: **22 clean rows** from 32 melted rows, asserted in
+`TestTransform::test_writes_the_expected_row_count`.
+
+## Coverage by module
+
+### `src/extract.py` — `tests/test_extract.py`
+
+- **Success path:** `file://` and `http(s)://` sources; creates missing parent
+  directories; overwrites a stale file; returns size and SHA-256.
+- **Failure paths:** HTTP error status, request timeout (message mentions the
+  timeout value), empty body, blank body, unsupported URL scheme, missing
+  local file.
+- **Safety:** a failed download leaves the previous file untouched, and no
+  `.part` temp file is left behind — including when `os.replace()` itself
+  fails.
+- **Metadata:** a timeout is always passed to `requests.get`; a custom
+  `User-Agent` is sent.
+- **Unreadable input:** an empty, non-UTF-8 or malformed file raises
+  `ExtractError` rather than leaking a pandas exception.
+
+### `src/transform.py` — `tests/test_transform.py`
+
+- Each individual step is tested in isolation (`wide_to_long`, `parse_dates`,
+  `coerce_numbers`, `drop_invalid_rows`, `drop_duplicates`, `add_new_cases`).
+- `parse_dates` is parameterised over all three accepted formats plus junk.
+- `validate` is tested against every rule it enforces, including that it
+  *accepts* valid data.
+- End-to-end `transform()`: exact row count, exact drop counts, column order
+  and names, ISO-formatted dates, sort order, determinism, and the date-range
+  filter (including that `end_date` is inclusive).
+- `TransformError` for a missing file, missing columns, an empty file, and a
+  file with no date columns.
+
+### `src/load.py` — `tests/test_load.py`
+
+- **Idempotency** (the most important property): loading the same file twice
+  leaves the row count unchanged, and loading changed values with the same
+  keys replaces rather than duplicates.
+- **Value fidelity:** every column round-trips through SQLite unchanged.
+- **SQL-injection safety:** table names must be plain identifiers; a name like
+  `bad name; DROP TABLE x` is rejected before the database file is created.
+- **Scale:** a 5,500-row file exercises the multi-chunk insert path.
+- **Error paths:** missing CSV, CSV with the wrong columns, header-only CSV.
+- **Audit trail:** `pipeline_runs` gains one `success` row per run; a failure
+  mid-insert is recorded as `status='failed'`, and if the audit table itself is
+  unusable the original error still surfaces.
+
+### `src/run_pipeline.py` — `tests/test_pipeline.py`
+
+- Full pipeline offline: all three artifacts created, data survives the
+  round-trip, no negative counts stored.
+- **Idempotency end-to-end:** two runs produce byte-identical table contents
+  while the audit table records both.
+- Options: `--skip-extract` (pointed at a missing source to prove nothing is
+  downloaded), date range, custom table name.
+- CLI: `main()` returns 0 on success, 1 on failure, 130 on `Ctrl-C`;
+  `--summary` works, including its error paths; parser defaults point at the
+  real project layout; running the module as a script sets the exit code.
+
+### Datasets — `tests/test_config.py` plus the deaths classes in the step tests
+
+- **Registry** (`test_config.py`): both datasets are registered; `confirmed`
+  matches the top-level constants exactly; datasets never share a URL, file or
+  table; unknown names are rejected with the choices; default paths live
+  inside the project.
+- **Deaths transform:** `deaths`/`new_deaths` column names, the same cleaning
+  rules (exact drop counts from `tests/fixtures/sample_deaths.csv`), the daily
+  change, last-value-wins de-duplication, and default paths from the dataset.
+- **Deaths load:** the `daily_deaths` table and its columns, idempotency, and a
+  confirmed-format CSV rejected as deaths.
+- **Pipeline/CLI:** a full deaths run, both datasets side by side in one
+  database, `--dataset deaths`, `--summary` following the dataset, and an
+  unknown `--dataset` exiting with code 2.
+
+### Combined analysis — `tests/test_report.py`
+
+- **View:** `--dataset all` creates `daily_cases`, `daily_deaths` and
+  `daily_summary`; the join keeps every place and day; the column list; the
+  fatality rate (10% for Albania on the last day) and `NULL` when there are no
+  cases; creating it twice is harmless; no view without a database or with
+  only one table; loading the two series on separate runs still ends with a
+  view; a corrupt database raises `ReportError`.
+- **Report:** every section; exact totals (30 cases, 6 deaths, 20.00%); the
+  top-countries ranking with alphabetical tie-breaks; right-aligned numbers;
+  six PASS checks on clean data and a FAIL when a bad row is injected; recent
+  runs; cases-only and deaths-only databases; missing, unrelated and corrupt
+  databases; no audit table.
+- **Writing:** creates folders; an unwritable destination raises
+  `ReportError`.
+- **CLI:** `--dataset all --report`; `--summary --report` writes the report
+  without running the pipeline; a report on a missing database exits 1.
+  (`--dataset all` itself, its option clashes and `--summary` of both tables
+  are covered by `TestRunAll` in `test_pipeline.py`.)
+
+## Known gaps
+
+- Dates before 2020-01-22 are not tested; the source dataset does not contain
+  any.
+
+## Coverage
+
+The suite covers 100% of the statements in `src/`, and CI enforces it: the
+build fails if coverage drops below 100% (`fail_under` in `pyproject.toml`).
+
+```bash
+python -m pytest --cov=src --cov-report=term-missing
+```
+
+| Module | Statements | Coverage |
+|--------|-----------:|---------:|
+| `config.py` | 49 | 100% |
+| `extract.py` | 76 | 100% |
+| `transform.py` | 151 | 100% |
+| `load.py` | 128 | 100% |
+| `run_pipeline.py` | 127 | 100% |
+| `report.py` | 126 | 100% |
+| **Total** | **657** | **100%** |
+
+200 tests in total: `test_config.py`, `test_extract.py`, `test_transform.py`,
+`test_load.py`, `test_pipeline.py` and `test_report.py`.
+
+The defensive branches are covered by tests that
+deliberately provoke them: an empty, non-UTF-8 or malformed CSV; a read-only
+database directory; a `sqlite3.Error` raised mid-insert; and a corrupt database
+file that also defeats the failure-recording `UPDATE`. The permission-based
+tests skip themselves when the suite runs as root, since root bypasses file
+permissions.

@@ -19,7 +19,7 @@ Usage
     python -m src.run_pipeline --source file:///tmp/local.csv
     python -m src.run_pipeline --summary         # just describe the database
     python -m src.run_pipeline --dataset deaths  # load the deaths series instead
-    python -m src.run_pipeline --dataset all     # both series in one go
+    python -m src.run_pipeline --dataset all --report report.md
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ from pathlib import Path
 from . import config
 from .extract import ExtractError, extract_from_url
 from .load import LoadError, load_to_sqlite, summarise
+from .report import ReportError, create_summary_view, write_report
 from .transform import TransformError, transform
 
 __all__ = ["PipelineResult", "build_parser", "main", "run_all", "run_pipeline"]
@@ -143,13 +144,13 @@ def run_all(
     skip_extract: bool = False,
     datasets: Iterable[str | config.Dataset] | None = None,
 ) -> list[PipelineResult]:
-    """Run the pipeline for every dataset, one after the other.
+    """Run the pipeline for every dataset, then create the summary view.
 
     Each dataset uses its own default source, files and table. `datasets`
     defaults to all registered ones; tests pass their own offline specs.
     """
     chosen = list(config.DATASETS.values()) if datasets is None else list(datasets)
-    return [
+    results = [
         run_pipeline(
             db_path=db_path,
             start_date=start_date,
@@ -160,6 +161,9 @@ def run_all(
         )
         for dataset in chosen
     ]
+    if create_summary_view(db_path):
+        LOGGER.info("View %s is ready", config.SUMMARY_VIEW_NAME)
+    return results
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -177,7 +181,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--dataset",
         choices=[*sorted(config.DATASETS), ALL_DATASETS],
         default=config.DEFAULT_DATASET,
-        help="Which JHU series to process; 'all' loads every series.",
+        help="Which JHU series to process; 'all' loads every series and "
+        "creates the daily_summary view.",
     )
     parser.add_argument(
         "--source",
@@ -233,6 +238,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--summary",
         action="store_true",
         help="Print a summary of the database and exit without running anything.",
+    )
+    parser.add_argument(
+        "--report",
+        default=None,
+        metavar="PATH",
+        help="Also write a Markdown report of the database to PATH "
+        "(works with --summary too).",
     )
     parser.add_argument(
         "--quiet",
@@ -299,6 +311,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.summary:
             for table in tables:
                 print(summarise(args.db, table))
+            if args.report:
+                print(f"Report written to {write_report(args.db, args.report)}")
             return 0
 
         options = {
@@ -321,14 +335,17 @@ def main(argv: list[str] | None = None) -> int:
                     **options,
                 )
             ]
+            create_summary_view(args.db)
 
         for result in results:
             _print_result(result)
         print()
         for table in tables:
             print(summarise(args.db, table))
+        if args.report:
+            print(f"Report written to {write_report(args.db, args.report)}")
         print()
-    except (ExtractError, TransformError, LoadError) as exc:
+    except (ExtractError, TransformError, LoadError, ReportError) as exc:
         LOGGER.error("%s", exc)
         return 1
     except KeyboardInterrupt:

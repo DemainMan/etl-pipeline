@@ -64,3 +64,12 @@ jobs:
               --db /tmp/ci-pipeline.db
           done
           python -m src.run_pipeline --db /tmp/ci-pipeline.db --dataset all --summary
+
+      - name: Report on both datasets
+        run: |
+          python -m src.run_pipeline --db /tmp/ci-pipeline.db --dataset all \
+            --summary --report /tmp/ci-report.md
+          cat /tmp/ci-report.md
+
+      - name: Run the guided demo offline
+        run: bash demo.sh --offline --no-pause

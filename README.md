@@ -6,9 +6,16 @@ A small, well-structured ETL pipeline that extracts data from a public CSV
 source, cleans and transforms it with pandas, and loads it into a SQLite
 database for analysis.
 
-## Status: in progress — day 3 of 4
+## Status: complete — v1.0.0 (23 Oct 2026)
 
-The full pipeline works end to end from the command line: **extract → transform → load** into SQLite, for confirmed cases and deaths, idempotently. **172 tests**, 100% coverage, running fully offline. CI runs lint, tests and smoke tests on Python 3.10–3.13.
+Extract, transform and load are implemented, tested and documented for two
+datasets (confirmed cases and deaths), plus a combined `daily_summary` view
+and a Markdown report. The suite (200 tests, 100% coverage) runs offline in
+about three seconds, and CI runs lint, tests and smoke tests on Python
+3.10–3.13 on every push.
+
+**Demo it in one command:** `./demo.sh` (live data) or `./demo.sh --offline`
+(no internet). `DEMO.md` has the talk track.
 
 ## Goal
 
@@ -48,12 +55,19 @@ place per day — which is what makes the later SQL useful.
 CSV URL ──► [extract.py] ──► data/raw/ ──► [transform.py] ──► data/processed/ ──► [load.py] ──► SQLite (pipeline.db)
 ```
 
-- **Configure** (`src/config.py`): paths, URLs and the dataset registry.
-- **Extract** (`src/extract.py`): timeout, HTTP check, atomic write, SHA-256.
-- **Transform** (`src/transform.py`): wide → tidy, cleaning, validation.
-- **Load** (`src/load.py`): idempotent `INSERT OR REPLACE` into SQLite, with a
-  `pipeline_runs` audit table.
-- **Orchestrate** (`src/run_pipeline.py`): the command-line interface.
+- **Extract** (`src/extract.py`): download the raw CSV and save it to
+  `data/raw/`. Uses a timeout, checks the HTTP status, writes the file
+  atomically so an interrupted run cannot leave a corrupt input, and returns a
+  SHA-256 checksum. Supports `http(s)://` and `file://` URLs.
+- **Transform** (`src/transform.py`): read the raw CSV, clean it with pandas
+  and write the result to `data/processed/`.
+- **Load** (`src/load.py`): insert the cleaned rows into SQLite idempotently.
+- **Orchestrate** (`src/run_pipeline.py`): run the three steps in order from
+  the command line, for one dataset or (`--dataset all`) for both.
+- **Report** (`src/report.py`): join cases and deaths into the
+  `daily_summary` view and write a Markdown report (`--report`).
+- **Configure** (`src/config.py`): every path, URL and column name in one
+  place, so the pipeline can be re-pointed without editing the logic.
 
 ## Quick start
 
@@ -106,6 +120,7 @@ pipeline.db:daily_cases — 330,327 rows, 201 countries, dates 2020-01-22 to 202
 | `--timeout` | `30` | Download timeout in seconds |
 | `--skip-extract` | off | Reuse the existing raw CSV instead of downloading |
 | `--summary` | off | Print a summary of the database and exit |
+| `--report PATH` | none | Also write a Markdown report of the database to `PATH` |
 | `--quiet` | off | Only show warnings and errors |
 
 Examples:
@@ -114,11 +129,11 @@ Examples:
 # Load the deaths series into the daily_deaths table
 python -m src.run_pipeline --dataset deaths
 
-# Load both series in one go
-python -m src.run_pipeline --dataset all
+# Load both series, build the daily_summary view and write a report
+python -m src.run_pipeline --dataset all --report report.md
 
-# Describe what is already loaded, without running anything
-python -m src.run_pipeline --dataset all --summary
+# Report on what is already loaded, without running anything
+python -m src.run_pipeline --dataset all --summary --report report.md
 
 # One year of data only
 python -m src.run_pipeline --start-date 2021-01-01 --end-date 2021-12-31
@@ -179,9 +194,46 @@ The source revises history, so a place's cumulative total can fall on a later
 day than it rose. Those corrections are small, and 362 of 330,327 output rows
 (0.11%) show the cumulative series dipping — usually by 1–6 cases, the largest
 being 349,116, where a reporting change rewrote a national total. It is a
-property of the source data rather than a bug, and tomorrow's SQL notes measure it. For the same reason, `new_cases`
+property of the source data rather than a bug, and query 8d in
+`sql_notes/analysis_queries.sql` measures it. For the same reason, `new_cases`
 is computed across the dates that survive, so on a gapped day it can span more
 than 24 hours, and it can be negative.
+
+## Combined analysis
+
+Once both tables are loaded, the pipeline creates a `daily_summary` **view**
+that joins them per place and day and adds a case fatality rate:
+
+| Column | Notes |
+|--------|-------|
+| `date`, `country`, `province` | the shared key |
+| `confirmed`, `new_cases` | from `daily_cases` |
+| `deaths`, `new_deaths` | from `daily_deaths` |
+| `case_fatality_pct` | `100 × deaths / confirmed`, `NULL` when there are no cases yet |
+
+A view stores no data of its own, so it always matches the tables and a
+re-run cannot duplicate it. The view is created automatically by
+`--dataset all`, or by whichever single-dataset run loads the second table.
+
+`--dataset all` can't be combined with `--source`, `--raw-path`,
+`--processed-path` or `--table`, because each series uses its own source,
+files and table.
+
+`--report report.md` writes a Markdown report: what is loaded, the latest
+worldwide totals, the top 10 countries with deaths and fatality rate, the
+data-quality checks re-run inside SQLite, and the last five runs. From the
+live data (latest date 2023-03-09):
+
+```
+- Confirmed on 2023-03-09: 676,570,149
+- Deaths on 2023-03-09: 6,881,802
+- Case fatality rate: 1.02%
+
+| # | Country | Confirmed   | Deaths    | Fatality % |
+| 1 | US      | 103,802,702 | 1,123,836 | 1.08       |
+| 2 | India   |  44,690,738 |   530,779 | 1.19       |
+| 3 | France  |  39,866,718 |   166,176 | 0.42       |
+```
 
 ## Idempotency
 
@@ -205,19 +257,91 @@ run_id  started_at                       rows_loaded  total_rows  status
 ## Tests
 
 ```bash
-python -m pytest               # 172 tests, fully offline
-ruff check src tests
-python -m pytest --cov=src     # must stay at 100%
+pip install -r requirements-dev.txt   # pytest, pytest-cov, ruff
+
+python -m pytest                      # run the suite
+ruff check src tests                  # lint
+python -m pytest --cov=src            # coverage (must stay at 100%)
 ```
 
-## Plan
+200 tests covering each step, the CLI, the report and the pipeline
+end-to-end. They run **entirely offline** against
+`tests/fixtures/sample_confirmed.csv` and `tests/fixtures/sample_deaths.csv`,
+which reproduce every data-quality problem listed above in eight rows each, so
+the suite is fast and deterministic. `test_plan.md` explains what is covered and why.
 
-| Day | Date | Work | Status |
-|-----|------|------|--------|
-| 1 | Tue 20 Oct 2026 | Scaffold, tooling, CI, config (dataset registry), extract step | ✅ done |
-| 2 | Wed 21 Oct 2026 | Transform step: wide → tidy, cleaning, validation | ✅ done |
-| 3 | Thu 22 Oct 2026 | Load step (idempotent SQLite + audit table) and the CLI | ✅ done |
-| 4 | Fri 23 Oct 2026 | Combined view, report, SQL notes, docs, demo — v1.0.0 | ⏳ next |
+CI runs the lint, the tests with coverage enforced at 100%, and an offline
+smoke test on Python 3.10, 3.11, 3.12 and 3.13. Tool settings live in
+`pyproject.toml`.
+
+## SQL examples
+
+`sql_notes/analysis_queries.sql` contains analysis queries against the
+loaded tables (worst 7-day rolling totals, first-case dates, monthly trends,
+downward revisions, fatality rate by country, deaths per month, South Africa
+year by year) plus data-quality spot checks, including a join check that
+every case row has a matching deaths row:
+
+```bash
+sqlite3 pipeline.db < sql_notes/analysis_queries.sql
+```
+
+## Folder map
+
+```
+etl-pipeline/
+├── .github/
+│   └── workflows/ci.yml     # lint + tests (100% coverage) + offline smoke tests
+├── data/
+│   ├── raw/                  # downloaded raw data (gitignored, .gitkeep kept)
+│   └── processed/            # cleaned data output (gitignored, .gitkeep kept)
+├── src/
+│   ├── __init__.py
+│   ├── config.py             # paths, URLs, column names, schema
+│   ├── extract.py            # Step 1: download -> data/raw/
+│   ├── transform.py          # Step 2: clean -> data/processed/
+│   ├── load.py               # Step 3: load -> SQLite
+│   ├── report.py             # daily_summary view + Markdown report
+│   └── run_pipeline.py       # orchestration + CLI
+├── sql_notes/
+│   └── analysis_queries.sql  # analysis + data-quality queries
+├── tests/
+│   ├── conftest.py           # shared fixtures (offline, tmp_path based)
+│   ├── fixtures/
+│   │   ├── sample_confirmed.csv
+│   │   └── sample_deaths.csv
+│   ├── test_config.py        # dataset registry
+│   ├── test_extract.py
+│   ├── test_transform.py
+│   ├── test_load.py
+│   ├── test_pipeline.py      # CLI + end-to-end
+│   └── test_report.py        # daily_summary view + report
+├── CHANGELOG.md              # release notes
+├── DEMO.md                   # how to demo the project (talk track + Q&A)
+├── demo.sh                   # guided demo: ./demo.sh or ./demo.sh --offline
+├── pyproject.toml            # ruff + coverage settings
+├── pytest.ini
+├── test_plan.md
+├── PROGRESS.md
+├── README.md
+├── requirements.txt
+├── requirements-dev.txt      # pytest-cov + ruff
+└── pipeline.db               # SQLite database (generated at runtime, gitignored)
+```
+
+## Roadmap
+
+Built in four days — see `PROGRESS.md` for the log:
+
+| Day | Date | Delivered |
+|-----|------|-----------|
+| 1 | Tue 20 Oct 2026 | Scaffold, tooling, CI, config (dataset registry), extract step |
+| 2 | Wed 21 Oct 2026 | Transform step: wide → tidy, cleaning, validation |
+| 3 | Thu 22 Oct 2026 | Load step (idempotent SQLite + audit table) and the CLI |
+| 4 | Fri 23 Oct 2026 | Combined view, report, SQL notes, docs, demo — v1.0.0 |
+
+Possible next steps: PostgreSQL as an alternative target, scheduling the run
+(cron or GitHub Actions on a timer), and a chart of the summary view.
 
 ## License
 
